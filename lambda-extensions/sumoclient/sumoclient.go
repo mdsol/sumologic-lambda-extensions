@@ -179,6 +179,7 @@ func (s *sumoLogicClient) getLogStream() string {
 
 func (s *sumoLogicClient) enhanceLogs(msg responseBody) {
 	s.logger.Debugln("Enhancing logs")
+	var jsonMessage interface{}
 	for _, item := range msg {
 		// item["FunctionName"] = s.config.FunctionName
 		// item["FunctionVersion"] = s.config.FunctionVersion
@@ -196,7 +197,12 @@ func (s *sumoLogicClient) enhanceLogs(msg responseBody) {
 			if ok {
 				delete(item, "record")
 			}
-			item["message"] = strings.TrimSpace(message)
+			err := json.Unmarshal([]byte(message), &jsonMessage)
+			if err != nil {
+				item["message"] = strings.TrimSpace(message)
+			} else {
+				item["message"] = jsonMessage
+			}
 		} else if ok && logType == "platform.report" {
 			s.createCWLogLine(item)
 		}
