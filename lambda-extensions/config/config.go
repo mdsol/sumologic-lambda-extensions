@@ -37,13 +37,17 @@ type LambdaExtensionConfig struct {
 	SourceCategoryOverride string
 }
 
-var validLogTypes = []string{"platform", "function", "extension"}
+var validLogTypes = []string{"platform", "function"}
 
 // GetConfig to get config instance
 func GetConfig() (*LambdaExtensionConfig, error) {
+	sumoHttpEndpoint, ret := os.LookupEnv("SUMO_HTTP_ENDPOINT")
+	if ret == false {
+		sumoHttpEndpoint = "<REPLACE ME>"
+	}
 
 	config := &LambdaExtensionConfig{
-		SumoHTTPEndpoint:       os.Getenv("SUMO_HTTP_ENDPOINT"),
+		SumoHTTPEndpoint:       sumoHttpEndpoint,
 		S3BucketName:           os.Getenv("SUMO_S3_BUCKET_NAME"),
 		S3BucketRegion:         os.Getenv("SUMO_S3_BUCKET_REGION"),
 		AWSLambdaRuntimeAPI:    os.Getenv("AWS_LAMBDA_RUNTIME_API"),

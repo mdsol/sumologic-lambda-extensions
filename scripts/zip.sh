@@ -39,6 +39,8 @@ if [ $status -ne 0 ]; then
 fi
 cd ..
 
+exit 0 # skip deploying layer
+
 echo "Create lambda Layer from the new ZIP file in the provided AWS_PROFILE aws account."
 if [[ -z "${AWS_PROFILE}" ]]; then
   export AWS_PROFILE="personal"
