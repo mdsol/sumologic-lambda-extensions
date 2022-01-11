@@ -191,8 +191,13 @@ func (s *sumoLogicClient) enhanceLogs(msg responseBody) {
 			if err != nil {
 				item["message"] = strings.TrimSpace(message)
 			} else {
-				for key, value := range jsonMessage.(map[string]interface{}) {
-					item[key] = value
+				jsonMessageMap, ok := jsonMessage.(map[string]interface{})
+				if ok {
+					for key, value := range jsonMessageMap {
+						item[key] = value
+					}
+				} else {
+					item["message"] = strings.TrimSpace(message)
 				}
 			}
 		} else if ok && logType == "platform.report" {
