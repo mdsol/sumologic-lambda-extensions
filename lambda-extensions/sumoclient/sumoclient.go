@@ -181,16 +181,6 @@ func (s *sumoLogicClient) getLogStream() string {
 func (s *sumoLogicClient) enhanceLogs(msg responseBody) {
 	s.logger.Debugln("Enhancing logs")
 	for _, item := range msg {
-		// item["FunctionName"] = s.config.FunctionName
-		// item["FunctionVersion"] = s.config.FunctionVersion
-		// creating loggroup/logstream as they are not available in Env.
-		// This is done to make it compatible with AWS Observability
-
-		item["logGroup"] = s.getLogGroup()
-		item["logStream"] = s.getLogStream()
-
-		item["IsColdStart"] = s.getColdStart()
-		item["LayerVersion"] = config.SumoLogicExtensionLayerVersionSuffix
 		logType, ok := item["type"].(string)
 		if ok && logType == "function" {
 			message, ok := item["record"].(string)
@@ -202,7 +192,9 @@ func (s *sumoLogicClient) enhanceLogs(msg responseBody) {
 			if err != nil {
 				item["message"] = message
 			} else {
-				item["message"] = json
+				for key, value := range json {
+					item[key] = value
+				}
 			}
 		} else if ok && logType == "platform.report" {
 			s.createCWLogLine(item)
