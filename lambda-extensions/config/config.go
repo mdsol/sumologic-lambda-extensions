@@ -37,7 +37,7 @@ type LambdaExtensionConfig struct {
 	SourceCategoryOverride string
 }
 
-var validLogTypes = []string{"platform", "function"}
+var validLogTypes = []string{"platform", "function", "extension"}
 
 // GetConfig to get config instance
 func GetConfig() (*LambdaExtensionConfig, error) {
