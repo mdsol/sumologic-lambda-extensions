@@ -49,7 +49,7 @@ for arch in "${ARCHITECTURES[@]}"; do
   fi
   cd -
 
-  exit 0 # skip deploying layer
+  continue # skip deploying layer
 
   echo "Create lambda Layer from the new ZIP file in the provided AWS_PROFILE aws account."
   if [[ -z "${AWS_PROFILE}" ]]; then
