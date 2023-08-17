@@ -272,7 +272,9 @@ func (s *sumoLogicClient) enhanceLogs(msg responseBody) {
 				if s.config.EnhanceJsonLogs {
 					item["message"] = json
 				} else {
-					item = json
+					for key, value := range json {
+						item[key] = value
+					}
 				}
 			}
 		} else if ok && logType == "platform.report" {
