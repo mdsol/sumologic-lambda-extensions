@@ -17,6 +17,7 @@ import (
 // LambdaExtensionConfig config for storing all configurable parameters
 type LambdaExtensionConfig struct {
 	SumoHTTPEndpoint       string
+	KMSKeyId               string
 	EnableFailover         bool
 	S3BucketName           string
 	S3BucketRegion         string
@@ -34,6 +35,9 @@ type LambdaExtensionConfig struct {
 	MaxDataPayloadSize     int
 	LambdaRegion           string
 	SourceCategoryOverride string
+	EnhanceJsonLogs        bool
+	EnableSpanDrops        bool
+	KmsCacheSeconds        int64
 }
 
 var defaultLogTypes = []string{"platform", "function"}
@@ -48,6 +52,7 @@ func GetConfig() (*LambdaExtensionConfig, error) {
 
 	config := &LambdaExtensionConfig{
 		SumoHTTPEndpoint:       sumoHttpEndpoint,
+		KMSKeyId:               os.Getenv("KMS_KEY_ID"),
 		S3BucketName:           os.Getenv("SUMO_S3_BUCKET_NAME"),
 		S3BucketRegion:         os.Getenv("SUMO_S3_BUCKET_REGION"),
 		AWSLambdaRuntimeAPI:    os.Getenv("AWS_LAMBDA_RUNTIME_API"),
@@ -69,6 +74,7 @@ func GetConfig() (*LambdaExtensionConfig, error) {
 	}
 	return config, nil
 }
+
 func (cfg *LambdaExtensionConfig) setDefaults() {
 	numRetry := os.Getenv("SUMO_NUM_RETRIES")
 	retrySleepTime := os.Getenv("SUMO_RETRY_SLEEP_TIME_MS")
@@ -77,16 +83,22 @@ func (cfg *LambdaExtensionConfig) setDefaults() {
 	maxConcurrentRequests := os.Getenv("SUMO_MAX_CONCURRENT_REQUESTS")
 	enableFailover := os.Getenv("SUMO_ENABLE_FAILOVER")
 	logTypes := os.Getenv("SUMO_LOG_TYPES")
+	enhanceJsonLogs := os.Getenv("SUMO_ENHANCE_JSON_LOGS")
+	enableSpanDrops := os.Getenv("SUMO_SPAN_DROP")
+	kmsCacheSeconds := os.Getenv("KMS_CACHE_SECONDS")
 
 	if numRetry == "" {
 		cfg.NumRetry = 3
 	}
+
 	if logLevel == "" {
 		cfg.LogLevel = logrus.InfoLevel
 	}
+
 	if maxDataQueueLength == "" {
 		cfg.MaxDataQueueLength = 20
 	}
+
 	if maxConcurrentRequests == "" {
 		cfg.MaxConcurrentRequests = 3
 	}
@@ -94,18 +106,33 @@ func (cfg *LambdaExtensionConfig) setDefaults() {
 	if enableFailover == "" {
 		cfg.EnableFailover = false
 	}
+
 	if cfg.AWSLambdaRuntimeAPI == "" {
 		cfg.AWSLambdaRuntimeAPI = "127.0.0.1:9001"
 	}
+
 	if logTypes == "" {
 		cfg.LogTypes = defaultLogTypes
 	} else {
 		cfg.LogTypes = strings.Split(logTypes, ",")
 	}
+
 	if retrySleepTime == "" {
-		cfg.RetrySleepTime =  300 * time.Millisecond
+		cfg.RetrySleepTime = 300 * time.Millisecond
 	}
 
+	if enhanceJsonLogs == "" {
+		cfg.EnhanceJsonLogs = true
+	}
+
+	if enableSpanDrops == "" {
+		// by default, spans will not be dropped if user did not configure the env variable
+		cfg.EnableSpanDrops = false
+	}
+
+	if kmsCacheSeconds == "" {
+		cfg.KmsCacheSeconds = 5
+	}
 }
 
 func (cfg *LambdaExtensionConfig) validateConfig() error {
@@ -115,6 +142,9 @@ func (cfg *LambdaExtensionConfig) validateConfig() error {
 	maxConcurrentRequests := os.Getenv("SUMO_MAX_CONCURRENT_REQUESTS")
 	enableFailover := os.Getenv("SUMO_ENABLE_FAILOVER")
 	retrySleepTime := os.Getenv("SUMO_RETRY_SLEEP_TIME_MS")
+	enhanceJsonLogs := os.Getenv("SUMO_ENHANCE_JSON_LOGS")
+	enableSpanDrops := os.Getenv("SUMO_SPAN_DROP")
+	kmsCacheSeconds := os.Getenv("KMS_CACHE_SECONDS")
 
 	var allErrors []string
 	var err error
@@ -124,7 +154,7 @@ func (cfg *LambdaExtensionConfig) validateConfig() error {
 	}
 
 	// Todo test url valid
-	if cfg.SumoHTTPEndpoint != "" {
+	if cfg.SumoHTTPEndpoint != "" && cfg.KMSKeyId == "" {
 		_, err = url.ParseRequestURI(cfg.SumoHTTPEndpoint)
 		if err != nil {
 			allErrors = append(allErrors, "SUMO_HTTP_ENDPOINT is not Valid")
@@ -138,7 +168,7 @@ func (cfg *LambdaExtensionConfig) validateConfig() error {
 		}
 	}
 
-	if cfg.EnableFailover == true {
+	if cfg.EnableFailover {
 		if cfg.S3BucketName == "" {
 			allErrors = append(allErrors, "SUMO_S3_BUCKET_NAME not set in environment variable")
 		}
@@ -172,8 +202,8 @@ func (cfg *LambdaExtensionConfig) validateConfig() error {
 		} else {
 			cfg.MaxDataQueueLength = int(customMaxDataQueueLength)
 		}
-
 	}
+
 	if maxConcurrentRequests != "" {
 		customMaxConcurrentRequests, err := strconv.ParseInt(maxConcurrentRequests, 10, 32)
 		if err != nil {
@@ -181,8 +211,8 @@ func (cfg *LambdaExtensionConfig) validateConfig() error {
 		} else {
 			cfg.MaxConcurrentRequests = int(customMaxConcurrentRequests)
 		}
-
 	}
+
 	if logLevel != "" {
 		customloglevel, err := logrus.ParseLevel(logLevel)
 		if err != nil {
@@ -190,7 +220,27 @@ func (cfg *LambdaExtensionConfig) validateConfig() error {
 		} else {
 			cfg.LogLevel = customloglevel
 		}
+	}
 
+	if enhanceJsonLogs != "" {
+		cfg.EnhanceJsonLogs, err = strconv.ParseBool(enhanceJsonLogs)
+		if err != nil {
+			allErrors = append(allErrors, fmt.Sprintf("Unable to parse SUMO_ENHANCE_JSON_LOGS: %v", err))
+		}
+	}
+
+	if enableSpanDrops != "" {
+		cfg.EnableSpanDrops, err = strconv.ParseBool(enableSpanDrops)
+		if err != nil {
+			allErrors = append(allErrors, fmt.Sprintf("Unable to parse SUMO_SPAN_DROP: %v", err))
+		}
+	}
+
+	if kmsCacheSeconds != "" {
+		cfg.KmsCacheSeconds, err = strconv.ParseInt(kmsCacheSeconds, 10, 32)
+		if err != nil {
+			allErrors = append(allErrors, fmt.Sprintf("Unable to parse KMS_CACHE_SECONDS: %v", err))
+		}
 	}
 
 	// test valid log format type
