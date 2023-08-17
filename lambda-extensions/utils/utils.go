@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 //------------------Retry Logic Code-------------------------------
@@ -72,8 +73,30 @@ func PrettyPrint(v interface{}) string {
 	return string(data)
 }
 
+var errNonJsonString = errors.New("non JSON string")
+
 // ParseJson to determine whether a string is valid JSON
 func ParseJson(s string) (js map[string]interface{}, err error) {
-	err = json.Unmarshal([]byte(s), &js)
+	json_string := ExtractJsonString(s)
+	if json_string == "" {
+		err = errNonJsonString
+		return
+	}
+
+	err = json.Unmarshal([]byte(json_string), &js)
 	return
+}
+
+// ExtractJsonString to extract a JSON string from a string
+func ExtractJsonString(s string) string {
+	if s[len(s)-1:] != "}" {
+		return ""
+	}
+
+	pos := strings.Index(s, "{")
+	if pos < 0 {
+		return ""
+	}
+
+	return s[pos:]
 }
