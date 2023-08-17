@@ -122,7 +122,7 @@ func (cfg *LambdaExtensionConfig) setDefaults() {
 	}
 
 	if enhanceJsonLogs == "" {
-		cfg.EnhanceJsonLogs = true
+		cfg.EnhanceJsonLogs = false
 	}
 
 	if enableSpanDrops == "" {
