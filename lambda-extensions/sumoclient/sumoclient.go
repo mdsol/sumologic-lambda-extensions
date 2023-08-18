@@ -3,6 +3,7 @@ package sumoclient
 import (
 	"bytes"
 	"context"
+	b64 "encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -14,11 +15,18 @@ import (
 
 	"github.com/SumoLogic/sumologic-lambda-extensions/lambda-extensions/config"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsConfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+
 	uuid "github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
 
-var isColdStart = true
+var isColdStart bool = true
+
+var decryptedSumoHttpEndpoint string
+var kmsEndpointCacheTime = time.Now().Add(-5 * time.Minute)
 
 // LogSender interface which needs to be implemented to send logs
 type LogSender interface {
@@ -36,6 +44,12 @@ type sumoLogicClient struct {
 
 // It is assumed that logs will be array of json objects and all channel payloads satisfy this format
 type responseBody []map[string]interface{}
+
+type KMSDecryptAPI interface {
+	Decrypt(ctx context.Context,
+		params *kms.DecryptInput,
+		optFns ...func(*kms.Options)) (*kms.DecryptOutput, error)
+}
 
 // NewLogSenderClient returns interface pointing to the concrete version of LogSender client
 func NewLogSenderClient(logger *logrus.Entry, cfg *config.LambdaExtensionConfig) LogSender {
@@ -56,8 +70,12 @@ func (s *sumoLogicClient) getColdStart() bool {
 }
 
 func (s *sumoLogicClient) makeRequest(ctx context.Context, buf *bytes.Buffer) (*http.Response, error) {
+	endpoint, err := s.getHttpEndpoint()
+	if err != nil {
+		err = fmt.Errorf("Failed to get SUMO HTTP Endpoint", err)
+	}
 
-	request, err := http.NewRequestWithContext(ctx, "POST", s.config.SumoHTTPEndpoint, buf)
+	request, err := http.NewRequestWithContext(ctx, "POST", endpoint, buf)
 	if err != nil {
 		err = fmt.Errorf("http.NewRequest() error: %v", err)
 		return nil, err
@@ -72,6 +90,56 @@ func (s *sumoLogicClient) makeRequest(ctx context.Context, buf *bytes.Buffer) (*
 	}
 	response, err := s.httpClient.Do(request)
 	return response, err
+}
+
+// Use cached KMS decrypted endpoint, refresh the cached endpoint, or return unencrypted endpoint
+func (s *sumoLogicClient) getHttpEndpoint() (string, error) {
+	if s.config.KMSKeyId == "" {
+		return s.config.SumoHTTPEndpoint, nil
+	}
+
+	if s.config.KMSKeyId != "" && time.Until(kmsEndpointCacheTime) > 0 {
+		return decryptedSumoHttpEndpoint, nil
+	}
+
+	if s.config.KMSKeyId != "" && (time.Until(kmsEndpointCacheTime) <= 0 || s.config.KmsCacheSeconds == 0) {
+
+		cfg, err := awsConfig.LoadDefaultConfig(context.TODO())
+		if err != nil {
+			fmt.Errorf("Configuration error in aws client,", err)
+		}
+
+		client := kms.NewFromConfig(cfg)
+
+		blob, err := b64.StdEncoding.DecodeString(s.config.SumoHTTPEndpoint)
+		if err != nil {
+			fmt.Errorf("Error converting string to blob,", err)
+		}
+
+		input := &kms.DecryptInput{
+			CiphertextBlob: blob,
+			KeyId:          aws.String(s.config.KMSKeyId),
+		}
+
+		result, err := DecodeData(context.TODO(), client, input)
+
+		if err != nil {
+			fmt.Errorf("Got error decrypting data: ", err)
+			return "", err
+		}
+
+		// Set the decrypted endpoint var as decrypted string to use as cache
+		decryptedSumoHttpEndpoint := string(result.Plaintext)
+
+		// Set new cache time
+		kmsEndpointCacheTime = time.Now()
+
+		return decryptedSumoHttpEndpoint, nil
+	}
+
+	err := fmt.Errorf("Failed to select a valid Sumo HTTP endpoint")
+
+	return "", err
 }
 
 // getS3KeyName returns the key by combining function name, version, date and uuid(version 1)
@@ -101,7 +169,7 @@ func (s *sumoLogicClient) failoverHandler(buf *bytes.Buffer) error {
 		}
 		err = utils.UploadToS3(&s.config.S3BucketName, &keyName, buf)
 		if err != nil {
-			err = fmt.Errorf("Failed to Send to S3 Bucket %s Path %s: %w", s.config.S3BucketName, keyName, err)
+			err = fmt.Errorf("failed to send to s3 bucket %s path %s: %w", s.config.S3BucketName, keyName, err)
 		}
 		return err
 	}
@@ -159,13 +227,22 @@ func (s *sumoLogicClient) createCWLogLine(item map[string]interface{}) {
 
 	message, ok := item["record"].(map[string]interface{})
 	if ok {
-		delete(item, "record")
+		s.logger.Debug("Not dropping record, if logType is platform.report.")
+		// delete(item, "record")
 	}
+
 	// Todo convert this to struct
+	// Updated cwMessageLine to also cover new field initDurationMs as record.metrics do have it.
 	metric := message["metrics"].(map[string]interface{})
-	cwMessageLine := fmt.Sprintf("REPORT RequestId: %v	Duration: %v ms	Billed Duration: %v ms 	Memory Size: %v MB	Max Memory Used: %v MB",
-		message["requestId"], metric["durationMs"], metric["billedDurationMs"], metric["memorySizeMB"], metric["maxMemoryUsedMB"])
-	item["message"] = cwMessageLine
+	if metric["initDurationMs"] == nil {
+		cwMessageLine := fmt.Sprintf("REPORT RequestId: %v	Duration: %v ms	Billed Duration: %v ms 	Memory Size: %v MB	Max Memory Used: %v MB",
+			message["requestId"], metric["durationMs"], metric["billedDurationMs"], metric["memorySizeMB"], metric["maxMemoryUsedMB"])
+		item["message"] = cwMessageLine
+	} else {
+		cwMessageLine := fmt.Sprintf("REPORT RequestId: %v	Duration: %v ms	Billed Duration: %v ms 	Memory Size: %v MB	Max Memory Used: %v MB	Init Duration: %v ms",
+			message["requestId"], metric["durationMs"], metric["billedDurationMs"], metric["memorySizeMB"], metric["maxMemoryUsedMB"], metric["initDurationMs"])
+		item["message"] = cwMessageLine
+	}
 }
 
 func (s *sumoLogicClient) getLogGroup() string {
@@ -192,12 +269,25 @@ func (s *sumoLogicClient) enhanceLogs(msg responseBody) {
 			if err != nil {
 				item["message"] = message
 			} else {
-				for key, value := range json {
-					item[key] = value
+				if s.config.EnhanceJsonLogs {
+					item["message"] = json
+				} else {
+					for key, value := range json {
+						item[key] = value
+					}
 				}
 			}
 		} else if ok && logType == "platform.report" {
 			s.createCWLogLine(item)
+		} else if ok && logType == "platform.runtimeDone" {
+			message, ok := item["record"].(map[string]interface{})
+			if ok {
+				_, ok := message["spans"]
+				if ok && s.config.EnableSpanDrops {
+					// dropping spans if its present and configured to drop
+					delete(message, "spans")
+				}
+			}
 		}
 	}
 }
@@ -205,10 +295,10 @@ func (s *sumoLogicClient) enhanceLogs(msg responseBody) {
 func (s *sumoLogicClient) transformBytesToArrayOfMap(rawmsg []byte) (responseBody, error) {
 	s.logger.Debugln("Transforming bytes to array of maps")
 	var msg responseBody
-	var err error
-	err = json.Unmarshal(rawmsg, &msg)
+	// var err error
+	var err error = json.Unmarshal(rawmsg, &msg)
 	if err != nil {
-		return msg, fmt.Errorf("Error in parsing payload %s: %v", string(rawmsg), err)
+		return msg, fmt.Errorf("error in parsing payload %s: %v", string(rawmsg), err)
 	}
 	return msg, err
 }
@@ -241,7 +331,7 @@ func (s *sumoLogicClient) createChunks(msgArr responseBody) ([]string, error) {
 	}
 	chunks = append(chunks, currentChunk.String())
 	if errorCount > 0 {
-		err = fmt.Errorf("Dropping %d messages due to json parsing error", errorCount)
+		err = fmt.Errorf("dropping %d messages due to json parsing error", errorCount)
 	}
 	s.logger.Debugf("Chunks created: %d NumOfParsingError: %d", len(chunks), errorCount)
 	return chunks, err
@@ -279,7 +369,7 @@ func (s *sumoLogicClient) SendLogs(ctx context.Context, rawmsg []byte) error {
 }
 
 func (s *sumoLogicClient) SendAllLogs(ctx context.Context, allMessages [][]byte) error {
-	if (len(allMessages) == 0) {
+	if len(allMessages) == 0 {
 		s.logger.Debugf("SendAllLogs: No messages to send")
 		return nil
 	}
@@ -383,4 +473,8 @@ func (s *sumoLogicClient) postToSumo(ctx context.Context, logStringToSend *strin
 	}
 
 	return nil
+}
+
+func DecodeData(c context.Context, api KMSDecryptAPI, input *kms.DecryptInput) (*kms.DecryptOutput, error) {
+	return api.Decrypt(c, input)
 }
