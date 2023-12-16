@@ -275,6 +275,15 @@ func (s *sumoLogicClient) enhanceLogs(msg responseBody) {
 					for key, value := range json {
 						item[key] = value
 					}
+
+					delete(item, "type")
+					_, ok := item["timestamp"]
+					if ok {
+						_, ok := item["time"]
+						if ok {
+							delete(item, "time")
+						}
+					}
 				}
 			}
 		} else if ok && logType == "platform.report" {
